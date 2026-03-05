@@ -20,7 +20,27 @@ st.markdown(
             color: #e5e7eb;
             font-family: 'Inter', sans-serif;
         }
-        .block-container {padding-top: 1.4rem;}
+        #MainMenu,
+        header,
+        footer,
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"] {
+            visibility: hidden;
+            height: 0;
+            position: fixed;
+        }
+        .stApp > header {
+            display: none;
+        }
+        [data-testid="stAppViewContainer"] {
+            padding-top: 0;
+            margin-top: 0;
+        }
+        .block-container {
+            padding-top: 0;
+            margin-top: 0;
+        }
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, rgba(17,24,39,0.95), rgba(11,15,25,0.95));
             border-right: 1px solid rgba(59,130,246,0.2);
