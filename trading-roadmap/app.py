@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -16,7 +16,7 @@ from risk_management import RiskRules
 
 st.set_page_config(page_title="Trading Roadmap Pro", page_icon="💹", layout="wide")
 
-JOURNEY_FILE = Path(__file__).with_name("journey_tracker_data.json")
+JOURNEY_FILE = Path(__file__).with_name("trading_data.json")
 JOURNEY_INITIAL_CAPITAL = 100_000.0
 JOURNEY_TARGET_CAPITAL = 10_000_000.0
 
@@ -45,6 +45,106 @@ def build_day_record(day_number: int, starting_capital: float, daily_target_retu
         "actual_profit": None,
         "ending_capital": None,
     }
+
+
+def build_calendar_dataset(history: list[dict], start_date: str) -> pd.DataFrame:
+    if not history:
+        return pd.DataFrame()
+
+    start = datetime.fromisoformat(start_date).date()
+    end = date.today()
+    all_dates = pd.date_range(start=start, end=end, freq="D")
+    base = pd.DataFrame({"date": all_dates})
+    base["date_str"] = base["date"].dt.strftime("%Y-%m-%d")
+
+    trade_rows = []
+    for row in history:
+        if row.get("actual_profit") is None:
+            continue
+        trade_rows.append(
+            {
+                "date_str": row.get("date"),
+                "day": row.get("day"),
+                "pnl": float(row.get("actual_profit", 0)),
+                "capital": float(row.get("ending_capital") or row.get("starting_capital", 0)),
+            }
+        )
+
+    trades = pd.DataFrame(trade_rows)
+    merged = base.merge(trades, how="left", on="date_str")
+    merged["status"] = "No Trade"
+    merged.loc[merged["pnl"] > 0, "status"] = "Profit"
+    merged.loc[merged["pnl"] < 0, "status"] = "Loss"
+    merged["color"] = merged["status"].map({"Profit": "#22c55e", "Loss": "#ef4444", "No Trade": "#1f2937"})
+
+    merged["month_idx"] = merged["date"].dt.month - 1
+    merged["week_of_month"] = ((merged["date"].dt.day - 1) // 7).astype(int)
+    merged["x"] = merged["month_idx"] * 6 + merged["week_of_month"]
+    merged["weekday"] = merged["date"].dt.weekday
+    merged["weekday_label"] = merged["date"].dt.day_name().str[:3]
+    merged["month_label"] = merged["date"].dt.strftime("%b")
+    merged["pnl_display"] = merged["pnl"].fillna(0)
+    merged["capital_display"] = merged["capital"].fillna(0)
+    merged["day_display"] = merged["day"].fillna(0).astype(int)
+    return merged
+
+
+def build_calendar_heatmap(calendar_df: pd.DataFrame):
+    fig = px.scatter(
+        calendar_df,
+        x="x",
+        y="weekday",
+        color="status",
+        color_discrete_map={"Profit": "#22c55e", "Loss": "#ef4444", "No Trade": "#1f2937"},
+        custom_data=["date_str", "pnl_display", "capital_display", "day_display", "month_label", "weekday_label"],
+    )
+    fig.update_traces(
+        mode="markers",
+        marker={"symbol": "square", "size": 16, "line": {"width": 0}},
+        hovertemplate=(
+            "Date: %{customdata[0]}<br>"
+            "PnL: ₹%{customdata[1]:,.0f}<br>"
+            "Capital: ₹%{customdata[2]:,.0f}<br>"
+            "Day: %{customdata[3]}<extra></extra>"
+        ),
+    )
+
+    month_ticks = [month * 6 + 2 for month in range(12)]
+    month_names = [datetime(2024, month + 1, 1).strftime("%b") for month in range(12)]
+    fig.update_layout(
+        height=300,
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(17,24,39,0.4)",
+        xaxis={"tickvals": month_ticks, "ticktext": month_names, "title": "", "showgrid": False},
+        yaxis={
+            "tickvals": [0, 1, 2, 3, 4, 5, 6],
+            "ticktext": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            "autorange": "reversed",
+            "title": "",
+            "showgrid": False,
+        },
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        margin={"l": 20, "r": 20, "t": 30, "b": 20},
+    )
+    return fig
+
+
+def build_pnl_curve(trades_df: pd.DataFrame):
+    curve_df = trades_df.copy()
+    curve_df["cumulative_profit"] = curve_df["actual_profit"].cumsum()
+    curve_df["equity_curve"] = curve_df["ending_capital"]
+
+    fig = px.line(
+        curve_df,
+        x="date",
+        y=["cumulative_profit", "equity_curve"],
+        markers=True,
+        title="PnL Performance",
+        labels={"value": "₹", "variable": "Metric", "date": "Date"},
+    )
+    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(17,24,39,0.4)")
+    return fig
 
 st.markdown(
     """
@@ -198,10 +298,13 @@ with main_tab:
     journey_state = st.session_state.journey_state
     journey_state.setdefault("started", False)
     journey_state.setdefault("history", [])
+    journey_state.setdefault("start_date", date.today().isoformat())
+    journey_state.setdefault("current_capital", JOURNEY_INITIAL_CAPITAL)
 
     if st.button("Start My ₹1L → ₹1Cr Journey", use_container_width=True):
         daily_target_return = daily_return_pct / 100
         day_one = build_day_record(1, JOURNEY_INITIAL_CAPITAL, daily_target_return)
+        day_one["date"] = date.today().isoformat()
         journey_state = {
             "started": True,
             "start_date": date.today().isoformat(),
@@ -260,6 +363,7 @@ with main_tab:
         if submitted:
             active_day = journey_state["history"][-1]
             ending_capital = max(active_day["starting_capital"] + today_result, 0)
+            active_day["date"] = date.today().isoformat()
             active_day["actual_profit"] = round(today_result, 2)
             active_day["ending_capital"] = round(ending_capital, 2)
 
@@ -273,6 +377,53 @@ with main_tab:
             save_journey_state(journey_state)
             st.success("Journey updated. Stay consistent and execute your plan.")
             st.rerun()
+
+        st.markdown("<p class='section-title'>Trading Performance Calendar</p>", unsafe_allow_html=True)
+
+        trades_df = pd.DataFrame([r for r in journey_state["history"] if r.get("actual_profit") is not None])
+        if not trades_df.empty:
+            trades_df["actual_profit"] = pd.to_numeric(trades_df["actual_profit"], errors="coerce").fillna(0)
+            trades_df["ending_capital"] = pd.to_numeric(trades_df["ending_capital"], errors="coerce").fillna(0)
+            trades_df["date"] = pd.to_datetime(trades_df["date"])
+
+            total_profit = trades_df.loc[trades_df["actual_profit"] > 0, "actual_profit"].sum()
+            total_loss = trades_df.loc[trades_df["actual_profit"] < 0, "actual_profit"].sum()
+            win_days = int((trades_df["actual_profit"] > 0).sum())
+            loss_days = int((trades_df["actual_profit"] < 0).sum())
+            total_trade_days = max(win_days + loss_days, 1)
+            win_rate = (win_days / total_trade_days) * 100
+
+            summary_cols = st.columns(5)
+            summary_cols[0].metric("Total Profit", f"₹{total_profit:,.0f}")
+            summary_cols[1].metric("Total Loss", f"₹{total_loss:,.0f}")
+            summary_cols[2].metric("Win Days", win_days)
+            summary_cols[3].metric("Loss Days", loss_days)
+            summary_cols[4].metric("Win Rate", f"{win_rate:.1f}%")
+
+            calendar_df = build_calendar_dataset(journey_state["history"], journey_state["start_date"])
+            st.plotly_chart(build_calendar_heatmap(calendar_df), use_container_width=True)
+            st.plotly_chart(build_pnl_curve(trades_df), use_container_width=True)
+        else:
+            st.info("Add your first daily PnL to start building the performance calendar.")
+
+        st.caption("Reset Trading Journey")
+        if st.button("Reset Trading Journey", type="secondary", use_container_width=True):
+            st.session_state["confirm_reset"] = True
+
+        if st.session_state.get("confirm_reset"):
+            st.warning("Are you sure you want to reset your trading journey?")
+            confirm_col, cancel_col = st.columns(2)
+            if confirm_col.button("Yes, Reset", type="primary", use_container_width=True):
+                journey_state = {"started": False, "history": [], "current_day": 0, "current_capital": JOURNEY_INITIAL_CAPITAL}
+                st.session_state.journey_state = journey_state
+                st.session_state["confirm_reset"] = False
+                if JOURNEY_FILE.exists():
+                    JOURNEY_FILE.unlink()
+                st.success("Trading journey reset to ₹100000. Start fresh with discipline.")
+                st.rerun()
+            if cancel_col.button("Cancel", use_container_width=True):
+                st.session_state["confirm_reset"] = False
+                st.rerun()
 
         timeline_df = pd.DataFrame(journey_state["history"])
         timeline_df["profit"] = timeline_df["actual_profit"].fillna(0)
