@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from charts import capital_growth_chart, drawdown_chart, monthly_performance_chart
@@ -9,6 +15,36 @@ from growth_simulator import SimulationConfig, TradingGrowthSimulator
 from risk_management import RiskRules
 
 st.set_page_config(page_title="Trading Roadmap Pro", page_icon="💹", layout="wide")
+
+JOURNEY_FILE = Path(__file__).with_name("journey_tracker_data.json")
+JOURNEY_INITIAL_CAPITAL = 100_000.0
+JOURNEY_TARGET_CAPITAL = 10_000_000.0
+
+
+def load_journey_state() -> dict:
+    if not JOURNEY_FILE.exists():
+        return {"started": False, "history": []}
+    try:
+        return json.loads(JOURNEY_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"started": False, "history": []}
+
+
+def save_journey_state(state: dict) -> None:
+    JOURNEY_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def build_day_record(day_number: int, starting_capital: float, daily_target_return: float) -> dict:
+    target_profit = starting_capital * daily_target_return
+    return {
+        "day": day_number,
+        "date": date.today().isoformat(),
+        "starting_capital": round(starting_capital, 2),
+        "target_profit": round(target_profit, 2),
+        "target_capital": round(starting_capital + target_profit, 2),
+        "actual_profit": None,
+        "ending_capital": None,
+    }
 
 st.markdown(
     """
@@ -154,6 +190,151 @@ for col, (icon, value, label) in zip(kpi_cols, kpis):
 main_tab, discipline_tab = st.tabs(["📊 Dashboard", "🧭 Trading Discipline Guide"])
 
 with main_tab:
+    st.markdown("<p class='section-title'>🚀 Start Your Trading Journey</p>", unsafe_allow_html=True)
+
+    if "journey_state" not in st.session_state:
+        st.session_state.journey_state = load_journey_state()
+
+    journey_state = st.session_state.journey_state
+    journey_state.setdefault("started", False)
+    journey_state.setdefault("history", [])
+
+    if st.button("Start My ₹1L → ₹1Cr Journey", use_container_width=True):
+        daily_target_return = daily_return_pct / 100
+        day_one = build_day_record(1, JOURNEY_INITIAL_CAPITAL, daily_target_return)
+        journey_state = {
+            "started": True,
+            "start_date": date.today().isoformat(),
+            "daily_target_return": daily_target_return,
+            "target_capital": JOURNEY_TARGET_CAPITAL,
+            "history": [day_one],
+            "current_day": 1,
+            "current_capital": JOURNEY_INITIAL_CAPITAL,
+        }
+        st.session_state.journey_state = journey_state
+        save_journey_state(journey_state)
+
+    if journey_state["started"] and journey_state["history"]:
+        current_day_data = journey_state["history"][-1]
+        current_capital = float(journey_state["current_capital"])
+        remaining_target = max(float(journey_state["target_capital"]) - current_capital, 0)
+        completion_pct = min((current_capital / JOURNEY_TARGET_CAPITAL) * 100, 100.0)
+
+        st.progress(completion_pct / 100)
+        st.caption(f"Journey Progress: ₹1,00,000 → ₹1,00,00,000 ({completion_pct:.2f}% complete)")
+
+        day_cols = st.columns(4)
+        day_cols[0].markdown(
+            f"<div class='glass-card'><div class='kpi-label'>Current Day</div><div class='kpi-value'>Day {current_day_data['day']}</div></div>",
+            unsafe_allow_html=True,
+        )
+        day_cols[1].markdown(
+            f"<div class='glass-card'><div class='kpi-label'>Current Capital</div><div class='kpi-value'>₹{current_capital:,.0f}</div></div>",
+            unsafe_allow_html=True,
+        )
+        day_cols[2].markdown(
+            f"<div class='glass-card'><div class='kpi-label'>Today's Profit Target</div><div class='kpi-value'>₹{current_day_data['target_profit']:,.0f}</div></div>",
+            unsafe_allow_html=True,
+        )
+        day_cols[3].markdown(
+            f"<div class='glass-card'><div class='kpi-label'>Remaining Target</div><div class='kpi-value'>₹{remaining_target:,.0f}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            f"""
+            <div class='glass-card'>
+                <div class='rule-item'><strong>Day {current_day_data['day']}</strong></div>
+                <div class='rule-item'>Starting Capital: ₹{current_day_data['starting_capital']:,.0f}</div>
+                <div class='rule-item'>Today's Profit Target: ₹{current_day_data['target_profit']:,.0f}</div>
+                <div class='rule-item'>Today's Target Capital: ₹{current_day_data['target_capital']:,.0f}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.form("journey_update_form", clear_on_submit=True):
+            today_result = st.number_input("Today's Profit / Loss", value=0.0, step=100.0)
+            submitted = st.form_submit_button("Update Today's Result", use_container_width=True)
+
+        if submitted:
+            active_day = journey_state["history"][-1]
+            ending_capital = max(active_day["starting_capital"] + today_result, 0)
+            active_day["actual_profit"] = round(today_result, 2)
+            active_day["ending_capital"] = round(ending_capital, 2)
+
+            next_day = active_day["day"] + 1
+            next_record = build_day_record(next_day, ending_capital, journey_state["daily_target_return"])
+            journey_state["history"].append(next_record)
+            journey_state["current_day"] = next_day
+            journey_state["current_capital"] = round(ending_capital, 2)
+
+            st.session_state.journey_state = journey_state
+            save_journey_state(journey_state)
+            st.success("Journey updated. Stay consistent and execute your plan.")
+            st.rerun()
+
+        timeline_df = pd.DataFrame(journey_state["history"])
+        timeline_df["profit"] = timeline_df["actual_profit"].fillna(0)
+        timeline_df["capital"] = timeline_df["ending_capital"].fillna(timeline_df["starting_capital"])
+        timeline_display = timeline_df[["day", "capital", "profit", "target_capital"]].copy()
+        timeline_display.columns = ["Day", "Capital", "Profit", "Target"]
+        timeline_display["Capital"] = timeline_display["Capital"].map(lambda x: f"₹{x:,.0f}")
+        timeline_display["Profit"] = timeline_display["Profit"].map(lambda x: f"₹{x:,.0f}")
+        timeline_display["Target"] = timeline_display["Target"].map(lambda x: f"₹{x:,.0f}")
+        st.markdown("<p class='section-title'>Trading Journey Timeline</p>", unsafe_allow_html=True)
+        st.dataframe(timeline_display, use_container_width=True, hide_index=True)
+
+        viz_col_1, viz_col_2 = st.columns(2)
+        with viz_col_1:
+            capital_fig = px.line(timeline_df, x="day", y="capital", markers=True, title="Capital Growth")
+            capital_fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(17,24,39,0.4)")
+            st.plotly_chart(capital_fig, use_container_width=True)
+        with viz_col_2:
+            remaining_df = timeline_df.copy()
+            remaining_df["remaining"] = JOURNEY_TARGET_CAPITAL - remaining_df["capital"]
+            remaining_fig = px.area(remaining_df, x="day", y="remaining", title="Remaining Distance to ₹1Cr")
+            remaining_fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(17,24,39,0.4)")
+            st.plotly_chart(remaining_fig, use_container_width=True)
+
+        gauge_fig = px.bar(
+            x=["Progress to ₹1Cr", "Remaining"],
+            y=[current_capital, max(JOURNEY_TARGET_CAPITAL - current_capital, 0)],
+            color=["Progress to ₹1Cr", "Remaining"],
+            title="Goal Completion Split",
+        )
+        gauge_fig.update_layout(showlegend=False, template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(17,24,39,0.4)")
+        st.plotly_chart(gauge_fig, use_container_width=True)
+
+        motivation_quotes = [
+            "Consistency beats luck.",
+            "Protect capital first.",
+            "Follow your trading plan.",
+        ]
+        quote = motivation_quotes[current_day_data["day"] % len(motivation_quotes)]
+        rule_text = "".join(
+            [
+                "<div class='rule-item'>Max risk per trade: 2%</div>",
+                "<div class='rule-item'>Max daily loss: 3%</div>",
+                "<div class='rule-item'>Maximum trades: 3</div>",
+                "<div class='rule-item'>Risk reward: 1:2</div>",
+            ]
+        )
+        panel_left, panel_right = st.columns(2)
+        panel_left.markdown(
+            f"<div class='glass-card'><div class='section-title'>Motivation Panel</div><div class='rule-item'>✨ {quote}</div></div>",
+            unsafe_allow_html=True,
+        )
+        panel_right.markdown(
+            f"<div class='glass-card warn-card'><div class='section-title'>Discipline Reminder</div>{rule_text}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            "<div class='glass-card'><div class='rule-item'>Click the start button to begin tracking your real journey from ₹1,00,000 to ₹1,00,00,000.</div></div>",
+            unsafe_allow_html=True,
+        )
+
     c1, c2 = st.columns(2)
     with c1:
         st.plotly_chart(capital_growth_chart(daily_df), use_container_width=True)
