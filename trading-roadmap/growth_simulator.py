@@ -38,6 +38,20 @@ class TradingGrowthSimulator:
         monthly = self._monthly_summary(daily)
         return {"daily": daily, "weekly": weekly, "monthly": monthly}
 
+    def analytics(self, daily_df: pd.DataFrame) -> Dict[str, float | str]:
+        max_drawdown = abs(float(daily_df["Drawdown %"].min()))
+        gross_profit = float(daily_df.loc[daily_df["Daily Profit"] > 0, "Daily Profit"].sum())
+        gross_loss = abs(float(daily_df.loc[daily_df["Daily Profit"] < 0, "Daily Profit"].sum()))
+        profit_factor = gross_profit / gross_loss if gross_loss else float("inf")
+
+        return {
+            "Maximum Drawdown": max_drawdown,
+            "Risk per Trade": self.risk_rules.risk_per_trade * 100,
+            "Daily Loss Limit": self.risk_rules.max_daily_loss * 100,
+            "Risk-Reward Ratio": self.risk_rules.risk_reward_ratio,
+            "Profit Factor": "∞" if profit_factor == float("inf") else round(profit_factor, 2),
+        }
+
     def _daily_progress(self) -> pd.DataFrame:
         rows = []
         ending_capital = self.config.initial_capital
